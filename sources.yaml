@@ -1,0 +1,36 @@
+# Blogs to ingest.
+#
+# `url` is the only required field. `platform` is auto-detected if omitted,
+# but pinning it avoids a probe request on every run. `default_lang` is the
+# fallback for posts too short to language-detect reliably — which, in a blog
+# full of photo posts, is a lot of them.
+
+sources:
+  - slug: onebluesun
+    url: https://onebluesun.wordpress.com
+    platform: wordpress_com
+    default_lang: ro
+
+  - slug: sleepless-bobby
+    url: https://sleepless-bobby.blogspot.com
+    platform: blogger
+    default_lang: en
+
+  - slug: noctambulul
+    url: https://noctambulul.blogspot.com
+    platform: blogger
+    default_lang: ro
+
+  - slug: inaweofrock
+    url: https://inaweofrock.blogspot.com
+    platform: blogger
+    default_lang: en
+
+  # Found in the sidebar of sleepless-bobby — confirm with the author before
+  # including, then uncomment.
+  # - slug: threeyearsafter
+  #   url: https://threeyearsafter.wordpress.com
+  #   platform: wordpress_com
+  # - slug: mbm-travel
+  #   url: https://mbm-travel.blogspot.com
+  #   platform: blogger

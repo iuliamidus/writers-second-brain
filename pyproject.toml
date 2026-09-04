@@ -1,0 +1,52 @@
+[project]
+name = "writers-second-brain"
+version = "0.1.0"
+description = "Turn a scattered blog archive into a queryable, navigable graph"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+
+dependencies = [
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "markdownify>=0.13",
+    "feedparser>=6.0",
+    "langdetect>=1.0.9",
+    "pyyaml>=6.0",
+    "typer>=0.12",
+    "rich>=13.7",
+    "neo4j>=5.20",
+]
+
+[project.optional-dependencies]
+# Stage two. Deliberately separate so the archive and structural graph work
+# with a much smaller install.
+embeddings = [
+    "sentence-transformers>=3.0",
+    "FlagEmbedding>=1.2",
+    "numpy>=1.26",
+]
+enrich = [
+    "anthropic>=0.40",
+]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+wsb = "wsb.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wsb"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]

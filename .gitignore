@@ -1,0 +1,13 @@
+data/
+second_brain.db
+second_brain.db-journal
+second_brain.db-wal
+second_brain.db-shm
+
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+.DS_Store

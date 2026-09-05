@@ -87,6 +87,15 @@ CREATE TABLE IF NOT EXISTS post_entities (
     PRIMARY KEY (post_id, entity_id)
 );
 
+-- Tracks which posts have been through the LLM extractor and against which
+-- content_hash. If a post is later re-fetched with new content, its hash
+-- changes and `posts_needing_extraction` will surface it again.
+CREATE TABLE IF NOT EXISTS extractions (
+    post_id       TEXT PRIMARY KEY REFERENCES posts(id),
+    content_hash  TEXT NOT NULL,
+    extracted_at  TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS edges (
     src_type    TEXT NOT NULL,
     src_id      TEXT NOT NULL,

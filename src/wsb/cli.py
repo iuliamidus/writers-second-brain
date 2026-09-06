@@ -224,58 +224,124 @@ def extract(
     store.close()
 
 
-@entities_app.command("canonicalize")
-def entities_canonicalize(
+@entities_app.command("propose-merges")
+def entities_propose_merges(
+    output: Path = typer.Argument(..., help="YAML file to write proposals to"),
     db: str = typer.Option(DEFAULT_DB, "--db"),
-    kind: str = typer.Option("theme", "--kind", help="theme, place, person, work, org, or 'all'"),
-    apply: bool = typer.Option(False, "--apply", help="Actually merge; otherwise dry-run"),
+    kind: str = typer.Option("all", "--kind", help="person, work, place, theme, org, or 'all'"),
     model: str = typer.Option(None, "--model"),
 ):
-    """Ask an LLM to merge cross-language and near-duplicate entities.
+    """Step 1 of the merge workflow: ask the LLM for merge proposals, write
+    them to a YAML file for human review.
 
-    Defaults to dry-run: prints proposed clusters so you can eyeball them.
-    Add --apply to write the merges (originals preserved in entity_aliases).
+    LLM output is non-deterministic and imperfect. The workflow is deliberately
+    two-step: propose → review → apply. Never apply merges without reading
+    them, because false merges silently rewrite the graph.
     """
-    from wsb.canonicalize import Canonicalizer
+    from wsb.canonicalize import Canonicalizer, proposals_to_yaml
 
     kinds = ["person", "work", "place", "theme", "org"] if kind == "all" else [kind]
     store = Store(db)
     canon = Canonicalizer(model=model) if model else Canonicalizer()
 
-    total_merged = 0
+    proposals: dict[str, list] = {}
     for k in kinds:
         rows = store.entities_by_kind(k)
         if not rows:
             console.print(f"[dim]{k}: no entities[/dim]")
             continue
         names = [r["name"] for r in rows]
-        console.print(f"\n[bold cyan]{k}[/bold cyan]  {len(names)} entities → asking model to cluster…")
+        console.print(f"[cyan]{k}[/cyan]  {len(names)} entities → asking model to cluster…")
 
         clusters = canon.propose(k, names)
-        if not clusters:
-            console.print("  [dim]no merges proposed[/dim]")
+        proposals[k] = clusters
+        console.print(f"  [green]{len(clusters)}[/green] clusters proposed")
+
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(proposals_to_yaml(proposals, model=canon.model))
+    store.close()
+
+    total = sum(len(v) for v in proposals.values())
+    console.print(f"\n[green]{total}[/green] proposals written to [blue]{output}[/blue]")
+    console.print("Now open the file, flip [dim]approve: false[/dim] to [dim]approve: true[/dim] on the ones you want,")
+    console.print(f"then run: [dim]wsb entities apply-merges {output}[/dim]")
+
+
+@entities_app.command("apply-merges")
+def entities_apply_merges(
+    input_file: Path = typer.Argument(..., help="Reviewed YAML from propose-merges"),
+    db: str = typer.Option(DEFAULT_DB, "--db"),
+):
+    """Step 2 of the merge workflow: apply only the clusters you marked
+    `approve: true` in the reviewed YAML file.
+
+    Members are folded into the canonical entity; original surface forms are
+    preserved in `entity_aliases` so the merge is reversible.
+    """
+    from wsb.canonicalize import load_proposals_yaml
+
+    proposals = load_proposals_yaml(input_file.read_text())
+    store = Store(db)
+
+    total_merged = 0
+    total_rejected = 0
+    total_missing = 0
+    for kind, clusters in proposals.items():
+        approved = [c for c in clusters if c.approve]
+        rejected = len(clusters) - len(approved)
+        total_rejected += rejected
+        if not approved:
+            console.print(f"[dim]{kind}: nothing approved (of {len(clusters)})[/dim]")
             continue
 
-        name_to_row = {r["name"]: r for r in rows}
-        for cluster in clusters:
-            canonical_row = name_to_row.get(cluster.canonical)
-            member_rows = [name_to_row[m] for m in cluster.members if m in name_to_row]
-            if not canonical_row or len(member_rows) < 2:
+        console.print(f"\n[bold cyan]{kind}[/bold cyan] applying {len(approved)} approved merges")
+        for cluster in approved:
+            canonical_id = store.upsert_entity(kind, cluster.canonical) if False else None
+            # Look up existing entities; do NOT create if missing.
+            canonical_row = store.conn.execute(
+                "SELECT id FROM entities WHERE kind = ? AND normalized = ?",
+                (kind, _fold_lookup(cluster.canonical)),
+            ).fetchone()
+            member_ids: list[int] = []
+            missing: list[str] = []
+            for m in cluster.members:
+                row = store.conn.execute(
+                    "SELECT id FROM entities WHERE kind = ? AND normalized = ?",
+                    (kind, _fold_lookup(m)),
+                ).fetchone()
+                if row is None:
+                    missing.append(m)
+                elif canonical_row is None or row["id"] != canonical_row["id"]:
+                    member_ids.append(row["id"])
+
+            if canonical_row is None:
+                console.print(f"  [yellow]skip[/yellow] canonical {cluster.canonical!r} no longer exists")
+                total_missing += 1
                 continue
-            others = [m["name"] for m in member_rows if m["id"] != canonical_row["id"]]
-            console.print(f"  [green]{cluster.canonical}[/green] ← {', '.join(others)}")
+            if missing:
+                console.print(f"  [dim]  {len(missing)} member(s) missing: {', '.join(missing)}[/dim]")
+                total_missing += len(missing)
+            if not member_ids:
+                console.print(f"  [dim]  no members to merge into {cluster.canonical}[/dim]")
+                continue
 
-            if apply:
-                member_ids = [m["id"] for m in member_rows if m["id"] != canonical_row["id"]]
-                store.merge_entities(canonical_row["id"], member_ids)
-                total_merged += len(member_ids)
+            store.merge_entities(canonical_row["id"], member_ids)
+            total_merged += len(member_ids)
+            console.print(f"  [green]{cluster.canonical}[/green] ← {', '.join(cluster.members)}")
 
-    if apply:
-        console.print(f"\n[green]{total_merged}[/green] entities merged")
-        console.print("Rebuild the graph: [dim]wsb graph build && wsb graph push[/dim]")
-    else:
-        console.print("\n[yellow]Dry-run.[/yellow] Re-run with --apply to write these merges.")
     store.close()
+    console.print(
+        f"\n[green]{total_merged}[/green] entities merged  ·  "
+        f"[dim]{total_rejected} clusters rejected · {total_missing} names missing[/dim]"
+    )
+    console.print("Rebuild the graph: [dim]wsb graph build && wsb graph push[/dim]")
+
+
+def _fold_lookup(name: str) -> str:
+    """Same normalisation the entity table uses. Kept local to avoid a wider
+    import surface in this command file."""
+    from wsb.normalize import fold
+    return fold(name).strip()
 
 
 @graph_app.command("build")

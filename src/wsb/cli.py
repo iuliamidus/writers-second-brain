@@ -22,7 +22,9 @@ from wsb.sources import build_source, detect_platform
 
 app = typer.Typer(add_completion=False, help="A Writer's Second Brain")
 graph_app = typer.Typer(help="Graph projection commands")
+entities_app = typer.Typer(help="Entity maintenance commands")
 app.add_typer(graph_app, name="graph")
+app.add_typer(entities_app, name="entities")
 
 console = Console()
 DEFAULT_DB = "second_brain.db"
@@ -141,6 +143,138 @@ def search(
         )
         console.print(f"  {row['snip']}")
         console.print(f"  [blue]{row['url']}[/blue]")
+    store.close()
+
+
+@app.command()
+def extract(
+    db: str = typer.Option(DEFAULT_DB, "--db"),
+    blog: str = typer.Option(None, "--blog", help="Restrict to one blog slug"),
+    limit: int = typer.Option(None, "--limit", "-n", help="Cap number of posts"),
+    force: bool = typer.Option(False, "--force", help="Re-extract already-processed posts"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Print what would be sent, do not call the API"),
+    floor: float = typer.Option(0.6, "--floor", help="Confidence floor for kept entities"),
+    model: str = typer.Option(None, "--model", help="Anthropic model id override"),
+):
+    """LLM entity extraction pass — populates the `extracted` tier.
+
+    Idempotent: skips posts whose content_hash already has an extraction row,
+    so re-running only touches new or edited posts. Use --force to redo.
+    """
+    from wsb.extract import Extractor, build_user_message, system_prompt
+
+    store = Store(db)
+    posts = store.posts_needing_extraction(blog=blog, limit=limit, force=force)
+    if not posts:
+        console.print("[yellow]Nothing to extract.[/yellow]")
+        store.close()
+        return
+
+    console.print(f"[cyan]{len(posts)}[/cyan] posts queued for extraction")
+
+    if dry_run:
+        for row in posts[:3]:
+            tags = (row["tags"] or "").split("||") if row["tags"] else []
+            console.print(f"\n[bold]{row['title']}[/bold] [dim]{row['blog_slug']} · {row['lang']}[/dim]")
+            console.print("[dim]--- system ---[/dim]")
+            console.print(system_prompt(row["lang"]))
+            console.print("[dim]--- user ---[/dim]")
+            console.print(build_user_message(row["title"] or "", tags, row["body_text"] or "", row["lang"] or "en"))
+        console.print(f"\n[dim](showing 3 of {len(posts)}; dry-run — no API call made)[/dim]")
+        store.close()
+        return
+
+    extractor = Extractor(model=model) if model else Extractor()
+
+    kept = 0
+    skipped = 0
+    with console.status("extracting…") as status:
+        for i, row in enumerate(posts, 1):
+            tags = (row["tags"] or "").split("||") if row["tags"] else []
+            try:
+                entities = extractor.extract(
+                    title=row["title"] or "",
+                    tags=tags,
+                    body=row["body_text"] or "",
+                    lang=row["lang"],
+                    floor=floor,
+                )
+            except Exception as exc:
+                console.print(f"[red]error on {row['id']}: {exc}[/red]")
+                skipped += 1
+                continue
+
+            mentions = []
+            for e in entities:
+                try:
+                    entity_id = store.upsert_entity(e.kind, e.name)
+                except ValueError:
+                    continue
+                mentions.append((entity_id, e.mention, e.confidence))
+
+            store.replace_post_entities(row["id"], mentions)
+            store.mark_extracted(row["id"], row["content_hash"])
+            kept += len(mentions)
+            status.update(f"extracting… {i}/{len(posts)} posts · {kept} entities kept")
+
+    console.print(f"[green]{kept}[/green] entity mentions stored across {len(posts) - skipped} posts")
+    if skipped:
+        console.print(f"[yellow]{skipped}[/yellow] posts skipped due to API errors")
+    console.print("Next: [dim]wsb graph build && wsb graph push[/dim]")
+    store.close()
+
+
+@entities_app.command("canonicalize")
+def entities_canonicalize(
+    db: str = typer.Option(DEFAULT_DB, "--db"),
+    kind: str = typer.Option("theme", "--kind", help="theme, place, person, work, org, or 'all'"),
+    apply: bool = typer.Option(False, "--apply", help="Actually merge; otherwise dry-run"),
+    model: str = typer.Option(None, "--model"),
+):
+    """Ask an LLM to merge cross-language and near-duplicate entities.
+
+    Defaults to dry-run: prints proposed clusters so you can eyeball them.
+    Add --apply to write the merges (originals preserved in entity_aliases).
+    """
+    from wsb.canonicalize import Canonicalizer
+
+    kinds = ["person", "work", "place", "theme", "org"] if kind == "all" else [kind]
+    store = Store(db)
+    canon = Canonicalizer(model=model) if model else Canonicalizer()
+
+    total_merged = 0
+    for k in kinds:
+        rows = store.entities_by_kind(k)
+        if not rows:
+            console.print(f"[dim]{k}: no entities[/dim]")
+            continue
+        names = [r["name"] for r in rows]
+        console.print(f"\n[bold cyan]{k}[/bold cyan]  {len(names)} entities → asking model to cluster…")
+
+        clusters = canon.propose(k, names)
+        if not clusters:
+            console.print("  [dim]no merges proposed[/dim]")
+            continue
+
+        name_to_row = {r["name"]: r for r in rows}
+        for cluster in clusters:
+            canonical_row = name_to_row.get(cluster.canonical)
+            member_rows = [name_to_row[m] for m in cluster.members if m in name_to_row]
+            if not canonical_row or len(member_rows) < 2:
+                continue
+            others = [m["name"] for m in member_rows if m["id"] != canonical_row["id"]]
+            console.print(f"  [green]{cluster.canonical}[/green] ← {', '.join(others)}")
+
+            if apply:
+                member_ids = [m["id"] for m in member_rows if m["id"] != canonical_row["id"]]
+                store.merge_entities(canonical_row["id"], member_ids)
+                total_merged += len(member_ids)
+
+    if apply:
+        console.print(f"\n[green]{total_merged}[/green] entities merged")
+        console.print("Rebuild the graph: [dim]wsb graph build && wsb graph push[/dim]")
+    else:
+        console.print("\n[yellow]Dry-run.[/yellow] Re-run with --apply to write these merges.")
     store.close()
 
 

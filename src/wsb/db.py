@@ -96,6 +96,16 @@ CREATE TABLE IF NOT EXISTS extractions (
     extracted_at  TEXT NOT NULL
 );
 
+-- Surface forms that were merged into a canonical entity. Keeps the merge
+-- reversible and lets future extractions of the same alias be redirected.
+CREATE TABLE IF NOT EXISTS entity_aliases (
+    entity_id   INTEGER NOT NULL REFERENCES entities(id),
+    alias       TEXT NOT NULL,
+    normalized  TEXT NOT NULL,
+    kind        TEXT NOT NULL,
+    PRIMARY KEY (kind, normalized)
+);
+
 CREATE TABLE IF NOT EXISTS edges (
     src_type    TEXT NOT NULL,
     src_id      TEXT NOT NULL,
@@ -207,6 +217,153 @@ class Store:
 
         self.conn.commit()
         return pid
+
+    def upsert_entity(self, kind: str, name: str) -> int:
+        """Return the id of the entity, creating it if new.
+
+        Merging happens on (kind, fold(name)) so diacritic variants collapse.
+        """
+        normalized = fold(name).strip()
+        if not normalized:
+            raise ValueError("entity name folds to empty string")
+        self.conn.execute(
+            "INSERT OR IGNORE INTO entities (kind, name, normalized) VALUES (?,?,?)",
+            (kind, name, normalized),
+        )
+        row = self.conn.execute(
+            "SELECT id FROM entities WHERE kind = ? AND normalized = ?",
+            (kind, normalized),
+        ).fetchone()
+        return row["id"]
+
+    def replace_post_entities(
+        self, post_id: str, mentions: list[tuple[int, str, float]]
+    ) -> None:
+        """Swap the entity mentions for a post, leaving other posts untouched.
+
+        `mentions` is (entity_id, surface_form, confidence).
+        """
+        self.conn.execute("DELETE FROM post_entities WHERE post_id = ?", (post_id,))
+        self.conn.executemany(
+            """INSERT OR REPLACE INTO post_entities
+               (post_id, entity_id, mention, confidence) VALUES (?,?,?,?)""",
+            [(post_id, eid, mention, conf) for eid, mention, conf in mentions],
+        )
+
+    def merge_entities(self, canonical_id: int, member_ids: list[int]) -> int:
+        """Redirect all mentions of `member_ids` to `canonical_id`, then drop
+        the member entity rows. Original names are preserved in entity_aliases
+        so the merge is auditable and reversible.
+
+        Returns the number of post-entity mentions redirected.
+        """
+        if canonical_id in member_ids:
+            member_ids = [m for m in member_ids if m != canonical_id]
+        if not member_ids:
+            return 0
+
+        placeholders = ",".join("?" * len(member_ids))
+
+        # Snapshot members before mutation so we can write aliases.
+        members = self.conn.execute(
+            f"SELECT id, kind, name, normalized FROM entities WHERE id IN ({placeholders})",
+            member_ids,
+        ).fetchall()
+
+        for m in members:
+            self.conn.execute(
+                """INSERT OR IGNORE INTO entity_aliases (entity_id, alias, normalized, kind)
+                   VALUES (?, ?, ?, ?)""",
+                (canonical_id, m["name"], m["normalized"], m["kind"]),
+            )
+
+        # Repoint post_entities. Where a post already links to canonical AND a
+        # member, keep the highest confidence and let INSERT OR REPLACE win.
+        member_mentions = self.conn.execute(
+            f"""SELECT post_id, entity_id, mention, confidence
+                FROM post_entities WHERE entity_id IN ({placeholders})""",
+            member_ids,
+        ).fetchall()
+
+        self.conn.execute(
+            f"DELETE FROM post_entities WHERE entity_id IN ({placeholders})",
+            member_ids,
+        )
+
+        redirected = 0
+        for row in member_mentions:
+            existing = self.conn.execute(
+                "SELECT confidence FROM post_entities WHERE post_id = ? AND entity_id = ?",
+                (row["post_id"], canonical_id),
+            ).fetchone()
+            if existing and existing["confidence"] >= row["confidence"]:
+                continue
+            self.conn.execute(
+                """INSERT OR REPLACE INTO post_entities
+                   (post_id, entity_id, mention, confidence) VALUES (?,?,?,?)""",
+                (row["post_id"], canonical_id, row["mention"], row["confidence"]),
+            )
+            redirected += 1
+
+        self.conn.execute(
+            f"DELETE FROM entities WHERE id IN ({placeholders})",
+            member_ids,
+        )
+        self.conn.commit()
+        return redirected
+
+    def entities_by_kind(self, kind: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            """SELECT e.id, e.kind, e.name, e.normalized,
+                      COUNT(pe.post_id) AS mentions
+               FROM entities e
+               LEFT JOIN post_entities pe ON pe.entity_id = e.id
+               WHERE e.kind = ?
+               GROUP BY e.id
+               ORDER BY mentions DESC, e.name""",
+            (kind,),
+        ).fetchall()
+
+    def mark_extracted(self, post_id: str, content_hash: str) -> None:
+        self.conn.execute(
+            """INSERT INTO extractions (post_id, content_hash, extracted_at)
+               VALUES (?, ?, datetime('now'))
+               ON CONFLICT(post_id) DO UPDATE SET
+                 content_hash = excluded.content_hash,
+                 extracted_at = excluded.extracted_at""",
+            (post_id, content_hash),
+        )
+        self.conn.commit()
+
+    def posts_needing_extraction(
+        self, blog: str | None = None, limit: int | None = None, force: bool = False
+    ) -> list[sqlite3.Row]:
+        """Posts whose content_hash has no matching extraction record.
+
+        `force=True` returns every post regardless of extraction state.
+        """
+        sql = """SELECT p.id, p.blog_slug, p.title, p.lang, p.body_text,
+                        p.content_hash, GROUP_CONCAT(t.name, '||') AS tags
+                 FROM posts p
+                 LEFT JOIN post_tags pt ON pt.post_id = p.id
+                 LEFT JOIN tags t ON t.id = pt.tag_id"""
+        clauses = []
+        params: list = []
+        if blog:
+            clauses.append("p.blog_slug = ?")
+            params.append(blog)
+        if not force:
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM extractions x "
+                "WHERE x.post_id = p.id AND x.content_hash = p.content_hash)"
+            )
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " GROUP BY p.id ORDER BY p.published_at DESC"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self.conn.execute(sql, params).fetchall()
 
     def replace_edges(self, source: str, edges: list[Edge]) -> int:
         """Swap out every edge from one provenance tier, leaving others intact."""

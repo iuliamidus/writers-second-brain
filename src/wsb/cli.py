@@ -345,17 +345,23 @@ def _fold_lookup(name: str) -> str:
 
 
 @app.command()
-def mcp(db: str = typer.Option(DEFAULT_DB, "--db")):
+def mcp(db: str = typer.Option(None, "--db", help="DB path; defaults to $WSB_DB or ./second_brain.db")):
     """Run the MCP server over stdio for chat-client integration.
 
     Point Claude Desktop (or any MCP client) at this command. All output is
     the MCP protocol on stdout — do not print anything else here.
+
+    The DB path resolution is explicit: --db flag wins, else $WSB_DB, else
+    the working directory. Claude Desktop launches this from an arbitrary
+    cwd, so relative paths do not work there — use $WSB_DB in the config.
     """
     import asyncio
+    import os
 
     from wsb.mcp_server import serve
 
-    asyncio.run(serve(db))
+    db_path = db or os.getenv("WSB_DB") or DEFAULT_DB
+    asyncio.run(serve(db_path))
 
 
 @graph_app.command("build")

@@ -79,6 +79,37 @@ Open <http://localhost:7474> (`neo4j` / `secondbrain`) and work through
 pipeline they need; everything in the first three sections runs with
 structural edges alone.
 
+## Chatting with the archive
+
+Install the MCP extra and add the server to Claude Desktop's config:
+
+```bash
+pip install -e ".[mcp]"
+```
+
+Edit `~/Library/Application Support/Claude/claude_desktop_config.json`
+(create it if missing) so that `mcpServers` contains:
+
+```json
+{
+  "mcpServers": {
+    "wsb": {
+      "command": "/absolute/path/to/writers-second-brain/.venv/bin/wsb",
+      "args": ["mcp"],
+      "env": {"WSB_DB": "/absolute/path/to/writers-second-brain/second_brain.db"}
+    }
+  }
+}
+```
+
+Restart Claude Desktop. The archive is now queryable in plain language:
+*"Care sunt scriitorii pe care îi menționez cel mai des?"*, *"Show me every
+post about Norway", "Ce teme apar împreună cu singurătatea?"*. Cypher is
+also available for structural questions Neo4j can answer.
+
+The server is read-only; it cannot mutate SQLite. Fetching, extraction and
+canonicalisation stay CLI-only.
+
 ## Design notes
 
 **Diacritics are load-bearing.** Romanian writers mix diacritics and bare

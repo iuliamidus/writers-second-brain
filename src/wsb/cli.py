@@ -344,6 +344,20 @@ def _fold_lookup(name: str) -> str:
     return fold(name).strip()
 
 
+@app.command()
+def mcp(db: str = typer.Option(DEFAULT_DB, "--db")):
+    """Run the MCP server over stdio for chat-client integration.
+
+    Point Claude Desktop (or any MCP client) at this command. All output is
+    the MCP protocol on stdout — do not print anything else here.
+    """
+    import asyncio
+
+    from wsb.mcp_server import serve
+
+    asyncio.run(serve(db))
+
+
 @graph_app.command("build")
 def graph_build(db: str = typer.Option(DEFAULT_DB, "--db")):
     """Derive structural edges from platform metadata."""

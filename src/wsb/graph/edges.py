@@ -75,6 +75,56 @@ def build_structural_edges(store: Store) -> list[Edge]:
     return edges
 
 
+def build_similarity_edges(
+    store: Store, model: str, k: int = 10, floor: float = 0.5
+) -> list[Edge]:
+    """Top-k SIMILAR_TO edges per post from cached embeddings.
+
+    Brute-force cosine over the full set. Vectors from the Embedder are already
+    L2-normalised, so the dot product is the cosine. `k` and `floor` both prune:
+    an edge is only emitted if it survives both, which keeps the graph readable
+    for a corpus this size.
+    """
+    import numpy as np
+
+    ids: list[str] = []
+    vecs: list[np.ndarray] = []
+    for post_id, vec in store.iter_embeddings(model):
+        ids.append(post_id)
+        vecs.append(vec)
+    if len(ids) < 2:
+        return []
+
+    matrix = np.vstack(vecs).astype(np.float32)
+    sims = matrix @ matrix.T
+    np.fill_diagonal(sims, -np.inf)  # exclude self-matches
+
+    edges: list[Edge] = []
+    seen: set[tuple[str, str]] = set()
+    for i, src in enumerate(ids):
+        row = sims[i]
+        # argpartition then sort just the top-k slice — cheaper than sorting all.
+        take = min(k, row.shape[0] - 1)
+        top_idx = np.argpartition(-row, take)[:take]
+        top_idx = top_idx[np.argsort(-row[top_idx])]
+        for j in top_idx:
+            score = float(row[j])
+            if score < floor:
+                break
+            dst = ids[j]
+            pair = (src, dst) if src < dst else (dst, src)
+            if pair in seen:
+                continue
+            seen.add(pair)
+            edges.append(
+                Edge(
+                    "Post", pair[0], "Post", pair[1], "SIMILAR_TO",
+                    weight=score, source="statistical", confidence=score,
+                )
+            )
+    return edges
+
+
 def build_entity_edges(store: Store) -> list[Edge]:
     """Post -> Entity edges from whatever the enrichment stage has extracted."""
     edges: list[Edge] = []

@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 
 from wsb.db import Store
-from wsb.graph.edges import build_entity_edges, build_structural_edges
+from wsb.graph.edges import build_entity_edges, build_similarity_edges, build_structural_edges
 from wsb.normalize import normalize
 from wsb.sources import build_source, detect_platform
 
@@ -345,6 +345,53 @@ def _fold_lookup(name: str) -> str:
 
 
 @app.command()
+def embed(
+    db: str = typer.Option(DEFAULT_DB, "--db"),
+    model: str = typer.Option(None, "--model", help="Model name; defaults to BAAI/bge-m3"),
+    blog: str = typer.Option(None, "--blog", help="Restrict to one blog slug"),
+    limit: int = typer.Option(None, "--limit", "-n"),
+    force: bool = typer.Option(False, "--force", help="Re-embed posts that already have a vector"),
+    batch_size: int = typer.Option(8, "--batch-size"),
+):
+    """Compute dense embeddings for every post — the `statistical` tier input.
+
+    First run downloads the model (BGE-M3 is ~2GB) and caches it. Idempotent
+    per (post_id, model), so re-running only touches posts without a vector.
+    """
+    from wsb.embeddings import DEFAULT_MODEL, Embedder, compose_from_row
+
+    model_name = model or DEFAULT_MODEL
+    store = Store(db)
+    rows = store.posts_needing_embedding(model_name, blog=blog, limit=limit, force=force)
+    if not rows:
+        console.print("[yellow]Nothing to embed.[/yellow]")
+        store.close()
+        return
+
+    console.print(f"[cyan]{len(rows)}[/cyan] posts queued for embedding with [bold]{model_name}[/bold]")
+    console.print("[dim]Loading model (first run downloads ~2GB)…[/dim]")
+    embedder = Embedder(model_name=model_name)
+
+    texts = [compose_from_row(r) for r in rows]
+    ids = [r["id"] for r in rows]
+
+    stored = 0
+    with console.status("embedding…") as status:
+        for start in range(0, len(texts), batch_size):
+            batch_texts = texts[start : start + batch_size]
+            batch_ids = ids[start : start + batch_size]
+            vectors = embedder.encode(batch_texts, batch_size=batch_size)
+            for pid, vec in zip(batch_ids, vectors):
+                store.save_embedding(pid, model_name, vec)
+            stored += len(batch_texts)
+            status.update(f"embedding… {stored}/{len(texts)} posts")
+
+    console.print(f"[green]{stored}[/green] embeddings stored")
+    console.print("Next: [dim]wsb graph build && wsb graph push[/dim]")
+    store.close()
+
+
+@app.command()
 def mcp(db: str = typer.Option(None, "--db", help="DB path; defaults to $WSB_DB or ./second_brain.db")):
     """Run the MCP server over stdio for chat-client integration.
 
@@ -365,8 +412,18 @@ def mcp(db: str = typer.Option(None, "--db", help="DB path; defaults to $WSB_DB 
 
 
 @graph_app.command("build")
-def graph_build(db: str = typer.Option(DEFAULT_DB, "--db")):
-    """Derive structural edges from platform metadata."""
+def graph_build(
+    db: str = typer.Option(DEFAULT_DB, "--db"),
+    similarity_k: int = typer.Option(10, "--k", help="Top-k SIMILAR_TO neighbours per post"),
+    similarity_floor: float = typer.Option(0.5, "--floor", help="Minimum cosine similarity"),
+    similarity_model: str = typer.Option(None, "--sim-model", help="Embedding model to use for similarity edges"),
+):
+    """Derive edges from stored data. Runs the structural tier always; the
+    extracted and statistical tiers are emitted when their prerequisites
+    exist (entities from `wsb extract`, vectors from `wsb embed`).
+    """
+    from wsb.embeddings import DEFAULT_MODEL
+
     store = Store(db)
     structural = build_structural_edges(store)
     store.replace_edges("structural", structural)
@@ -377,8 +434,18 @@ def graph_build(db: str = typer.Option(DEFAULT_DB, "--db")):
         store.replace_edges("extracted", extracted)
         console.print(f"[green]{len(extracted)}[/green] extracted edges")
 
+    model = similarity_model or DEFAULT_MODEL
+    has_embeddings = store.conn.execute(
+        "SELECT 1 FROM embeddings WHERE model = ? LIMIT 1", (model,)
+    ).fetchone()
+    statistical: list = []
+    if has_embeddings:
+        statistical = build_similarity_edges(store, model, k=similarity_k, floor=similarity_floor)
+        store.replace_edges("statistical", statistical)
+        console.print(f"[green]{len(statistical)}[/green] statistical edges  [dim](model={model}, k={similarity_k}, floor={similarity_floor})[/dim]")
+
     by_rel: dict[str, int] = {}
-    for edge in structural + extracted:
+    for edge in structural + extracted + statistical:
         by_rel[edge.rel] = by_rel.get(edge.rel, 0) + 1
     for rel, n in sorted(by_rel.items(), key=lambda kv: -kv[1]):
         console.print(f"  {rel:<14} {n}")

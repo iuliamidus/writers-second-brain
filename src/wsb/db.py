@@ -106,6 +106,21 @@ CREATE TABLE IF NOT EXISTS entity_aliases (
     PRIMARY KEY (kind, normalized)
 );
 
+-- Dense vector per post per model. Vectors are stored as raw float32 bytes;
+-- for this corpus size (~1500 posts) brute-force cosine in numpy is faster
+-- and less fragile than loading a sqlite-vec extension. Switch to sqlite-vec
+-- if the corpus grows past ~10k posts.
+CREATE TABLE IF NOT EXISTS embeddings (
+    post_id  TEXT NOT NULL REFERENCES posts(id),
+    model    TEXT NOT NULL,
+    dim      INTEGER NOT NULL,
+    vector   BLOB NOT NULL,
+    embedded_at TEXT NOT NULL,
+    PRIMARY KEY (post_id, model)
+);
+
+CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model);
+
 CREATE TABLE IF NOT EXISTS edges (
     src_type    TEXT NOT NULL,
     src_id      TEXT NOT NULL,
@@ -323,6 +338,70 @@ class Store:
                ORDER BY mentions DESC, e.name""",
             (kind,),
         ).fetchall()
+
+    def save_embedding(self, post_id: str, model: str, vector) -> None:
+        """Store a dense vector for a post under a given model name."""
+        import numpy as np
+
+        arr = np.asarray(vector, dtype=np.float32)
+        self.conn.execute(
+            """INSERT INTO embeddings (post_id, model, dim, vector, embedded_at)
+               VALUES (?, ?, ?, ?, datetime('now'))
+               ON CONFLICT(post_id, model) DO UPDATE SET
+                 dim = excluded.dim,
+                 vector = excluded.vector,
+                 embedded_at = excluded.embedded_at""",
+            (post_id, model, int(arr.shape[0]), arr.tobytes()),
+        )
+        self.conn.commit()
+
+    def posts_needing_embedding(
+        self, model: str, blog: str | None = None, limit: int | None = None,
+        force: bool = False,
+    ) -> list[sqlite3.Row]:
+        """Posts without an embedding for `model`, with everything the composer
+        needs (title, body, tags, media captions) so the caller can batch.
+        """
+        sql = """SELECT p.id, p.blog_slug, p.title, p.body_text, p.lang,
+                        (SELECT GROUP_CONCAT(t.name, '||')
+                         FROM post_tags pt JOIN tags t ON t.id = pt.tag_id
+                         WHERE pt.post_id = p.id) AS tags,
+                        (SELECT GROUP_CONCAT(m.caption, '||')
+                         FROM media m
+                         WHERE m.post_id = p.id AND m.caption IS NOT NULL) AS captions
+                 FROM posts p"""
+        clauses = []
+        params: list = []
+        if blog:
+            clauses.append("p.blog_slug = ?")
+            params.append(blog)
+        if not force:
+            clauses.append(
+                "NOT EXISTS (SELECT 1 FROM embeddings e "
+                "WHERE e.post_id = p.id AND e.model = ?)"
+            )
+            params.append(model)
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY p.published_at DESC"
+        if limit:
+            sql += " LIMIT ?"
+            params.append(limit)
+        return self.conn.execute(sql, params).fetchall()
+
+    def iter_embeddings(self, model: str):
+        """Yield (post_id, numpy_vector) for every post embedded with `model`."""
+        import numpy as np
+
+        rows = self.conn.execute(
+            "SELECT post_id, dim, vector FROM embeddings WHERE model = ?",
+            (model,),
+        )
+        for row in rows:
+            arr = np.frombuffer(row["vector"], dtype=np.float32)
+            if arr.shape[0] != row["dim"]:
+                arr = arr.reshape(-1)  # defensive; dim mismatch should not happen
+            yield row["post_id"], arr
 
     def mark_extracted(self, post_id: str, content_hash: str) -> None:
         self.conn.execute(

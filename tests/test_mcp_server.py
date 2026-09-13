@@ -83,10 +83,11 @@ def test_search_posts_diacritic_insensitive(db):
 
 def test_search_posts_returns_snippet_and_score(db):
     path, _, _ = db
-    results = search_posts(path, "poet")
+    # Force FTS mode — the semantic side isn't seeded in this fixture.
+    results = search_posts(path, "poet", mode="fts")
     assert results
     assert "snippet" in results[0]
-    assert "score" in results[0]
+    assert "bm25_score" in results[0]
 
 
 def test_search_posts_respects_limit(db):

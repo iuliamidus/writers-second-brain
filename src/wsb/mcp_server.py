@@ -37,22 +37,68 @@ def _rows_to_dicts(rows) -> list[dict]:
 
 # ---------- Tool handlers ----------
 
-def search_posts(db_path: str, query: str, limit: int = 15) -> list[dict]:
-    """Diacritic-insensitive full-text search across every blog."""
+_EMBEDDER_CACHE: dict[str, object] = {}
+
+
+def _get_embedder(model: str):
+    """Load and cache the sentence-transformers model on first use. Returns
+    None if the encoder isn't installed — the caller then falls back to FTS.
+    """
+    cached = _EMBEDDER_CACHE.get(model)
+    if cached is not None:
+        return cached
+    try:
+        from wsb.embeddings import Embedder
+    except ImportError:
+        return None
+    try:
+        embedder = Embedder(model_name=model)
+    except Exception:
+        return None
+    _EMBEDDER_CACHE[model] = embedder
+    return embedder
+
+
+def _has_embeddings(conn: sqlite3.Connection, model: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM embeddings WHERE model = ? LIMIT 1", (model,)
+    ).fetchone()
+    return row is not None
+
+
+def search_posts(db_path: str, query: str, limit: int = 15,
+                 mode: str = "hybrid", model: str = "BAAI/bge-m3") -> list[dict]:
+    """Hybrid search: reciprocal-rank fusion of FTS5 (keyword) and dense
+    cosine (semantic). Falls back to FTS-only if the embedding model isn't
+    available or no embeddings are stored under this model name."""
+    from wsb.search import fts_search, hybrid_search, semantic_search
+
     conn = _connect(db_path)
     try:
-        rows = conn.execute(
-            """SELECT p.id, p.title, p.url, p.blog_slug, p.published_at, p.lang,
-                      snippet(posts_fts, 2, '[', ']', ' … ', 12) AS snippet,
-                      bm25(posts_fts) AS score
-               FROM posts_fts
-               JOIN posts p ON p.id = posts_fts.post_id
-               WHERE posts_fts MATCH ?
-               ORDER BY score
-               LIMIT ?""",
-            (fold(query), max(1, min(limit, 50))),
-        ).fetchall()
-        return _rows_to_dicts(rows)
+        limit = max(1, min(limit, 50))
+        if mode == "fts":
+            return fts_search(conn, query, limit=limit)
+        if mode == "semantic":
+            embedder = _get_embedder(model)
+            if embedder is None or not _has_embeddings(conn, model):
+                return fts_search(conn, query, limit=limit)
+            return semantic_search(conn, embedder, query, model, limit=limit)
+        # default: hybrid, with FTS-fallback when we can't encode.
+        embedder = _get_embedder(model)
+        if embedder is None or not _has_embeddings(conn, model):
+            return fts_search(conn, query, limit=limit)
+        return hybrid_search(conn, embedder, query, model, limit=limit)
+    finally:
+        conn.close()
+
+
+def similar_posts(db_path: str, post_id: str, limit: int = 10) -> list[dict]:
+    """Posts most similar to a given post via stored SIMILAR_TO edges."""
+    from wsb.search import similar_posts as _similar
+
+    conn = _connect(db_path)
+    try:
+        return _similar(conn, post_id, limit=max(1, min(limit, 50)))
     finally:
         conn.close()
 
@@ -244,17 +290,41 @@ TOOL_SCHEMAS = [
     {
         "name": "search_posts",
         "description": (
-            "Diacritic-insensitive full-text search across every blog. "
-            "Use this to find posts by keyword. Returns id, title, url, "
-            "blog_slug, published_at, lang, and a highlighted snippet."
+            "Hybrid search across every blog: reciprocal-rank fusion of "
+            "diacritic-insensitive FTS5 (keyword) and dense BGE-M3 cosine "
+            "(semantic, cross-language). A Romanian query about singurătate "
+            "will surface English posts about solitude when they exist. "
+            "Falls back to keyword-only if embeddings are not available."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "query": {"type": "string", "description": "Search query (Romanian or English)"},
                 "limit": {"type": "integer", "default": 15, "minimum": 1, "maximum": 50},
+                "mode": {
+                    "type": "string",
+                    "enum": ["hybrid", "fts", "semantic"],
+                    "default": "hybrid",
+                    "description": "hybrid (default) fuses both; fts is keyword-only; semantic is cosine-only",
+                },
             },
             "required": ["query"],
+        },
+    },
+    {
+        "name": "similar_posts",
+        "description": (
+            "Posts most similar to a given post, drawn from the SIMILAR_TO "
+            "edges built from embedding cosine. Use to answer 'what else did "
+            "the writer produce like this one'."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "post_id": {"type": "string", "description": "Post id from search_posts or get_post"},
+                "limit": {"type": "integer", "default": 10, "minimum": 1, "maximum": 50},
+            },
+            "required": ["post_id"],
         },
     },
     {
@@ -355,7 +425,12 @@ async def handle_call(name: str, arguments: dict[str, Any], db_path: str) -> Any
     """
     args = arguments or {}
     if name == "search_posts":
-        return search_posts(db_path, args["query"], args.get("limit", 15))
+        return search_posts(
+            db_path, args["query"], args.get("limit", 15),
+            mode=args.get("mode", "hybrid"),
+        )
+    if name == "similar_posts":
+        return similar_posts(db_path, args["post_id"], args.get("limit", 10))
     if name == "get_post":
         return get_post(db_path, args["post_id"])
     if name == "list_entities":

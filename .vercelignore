@@ -1,0 +1,22 @@
+# Everything Vercel doesn't need at deploy time.
+# We only ship: index.html, data.json, api/chat.py, vercel.json.
+
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+
+src/
+tests/
+data/
+docker-compose.yml
+sources.yaml
+second_brain.db*
+pyproject.toml
+CLAUDE.md
+MEMORY.md
+
+# The generated graph.html (2 MB) is the standalone artefact for emailing;
+# it lives under data/ but be explicit anyway.
+graph.html

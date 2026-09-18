@@ -1,0 +1,2 @@
+# The Vercel Python function in api/chat.py uses only stdlib.
+# This file exists so Vercel detects the Python runtime.

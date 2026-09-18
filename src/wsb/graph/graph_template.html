@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>A Writer's Second Brain — Graph</title>
+<style>
+  :root {
+    --bg: #f6f4ef;
+    --panel: #ffffff;
+    --ink: #14110d;
+    --muted: #8a847a;
+    --line: #e7e2d8;
+    --line-soft: #efeae0;
+    --accent: #b8563d;
+    --accent-soft: #f1d9d0;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", "Helvetica Neue", sans-serif;
+    color: var(--ink);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "ss01", "cv11";
+  }
+  #app { display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
+  #sidebar {
+    border-right: 1px solid var(--line);
+    padding: 22px 20px;
+    overflow-y: auto;
+    background: var(--panel);
+    font-size: 13px;
+    line-height: 1.45;
+  }
+  #sidebar .title {
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    margin-bottom: 2px;
+  }
+  #sidebar .subtitle {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 12px;
+  }
+  #sidebar .corpus-stats {
+    font-size: 11px;
+    color: var(--muted);
+    padding: 10px 0 14px;
+    border-top: 1px solid var(--line-soft);
+    border-bottom: 1px solid var(--line-soft);
+    margin-bottom: 18px;
+    letter-spacing: 0.01em;
+  }
+  #sidebar .corpus-stats strong { color: var(--ink); font-weight: 600; }
+  #sidebar h2 {
+    font-size: 10.5px;
+    margin: 20px 0 8px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    font-weight: 600;
+  }
+  #sidebar h2:first-of-type { margin-top: 0; }
+  #sidebar label {
+    display: flex; align-items: center; gap: 6px;
+    margin: 5px 0; cursor: pointer; user-select: none;
+    transition: color 0.15s;
+  }
+  #sidebar label:hover { color: var(--accent); }
+  #sidebar label input[type="checkbox"] {
+    accent-color: var(--accent);
+    margin: 0;
+  }
+  #sidebar .row {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; color: var(--muted); margin-bottom: 4px;
+    letter-spacing: 0.02em;
+  }
+  #sidebar .buttons { display: flex; gap: 6px; margin-top: 6px; }
+  #sidebar button {
+    flex: 1;
+    padding: 6px 10px;
+    border: 1px solid var(--line);
+    background: transparent;
+    cursor: pointer;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: inherit;
+    color: var(--muted);
+    transition: all 0.15s;
+  }
+  #sidebar button:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  #sidebar input[type="text"] {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 13px;
+    background: var(--panel);
+    transition: border-color 0.15s;
+  }
+  #sidebar input[type="text"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  input[type="range"] {
+    -webkit-appearance: none; appearance: none;
+    height: 3px; background: var(--line);
+    border-radius: 2px;
+    width: 100%;
+    margin: 0;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--panel);
+    box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 14px; height: 14px; border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--panel);
+  }
+  .swatch {
+    display: inline-block;
+    width: 8px; height: 8px;
+    border-radius: 50%;
+  }
+  .legend {
+    font-size: 11px;
+    color: var(--muted);
+    padding-top: 14px;
+    margin-top: 20px;
+    border-top: 1px solid var(--line-soft);
+    line-height: 1.7;
+  }
+  .legend .item { display: flex; align-items: center; gap: 8px; margin-bottom: 3px; }
+  .legend .line { display: inline-block; width: 18px; height: 2px; }
+  .legend .hint { margin-top: 8px; font-size: 10.5px; }
+  .legend kbd {
+    display: inline-block;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-family: inherit;
+    background: var(--line-soft);
+    border-radius: 3px;
+    border: 1px solid var(--line);
+    color: var(--muted);
+  }
+
+  /* Dual-range year slider */
+  .dual-range {
+    position: relative;
+    height: 26px;
+    margin-top: 2px;
+  }
+  .dual-range .track {
+    position: absolute; top: 12px; left: 0; right: 0;
+    height: 3px; background: var(--line); border-radius: 2px;
+  }
+  .dual-range .fill {
+    position: absolute; top: 12px; height: 3px;
+    background: var(--accent); border-radius: 2px;
+  }
+  .dual-range input[type="range"] {
+    position: absolute; top: 6px; left: 0; right: 0;
+    background: none;
+    pointer-events: none;
+    -webkit-appearance: none;
+    height: 14px;
+    z-index: 2;
+  }
+  .dual-range input[type="range"]::-webkit-slider-thumb {
+    pointer-events: auto;
+  }
+  .dual-range input[type="range"]::-moz-range-thumb {
+    pointer-events: auto;
+  }
+  .dual-range input[type="range"]::-moz-range-track {
+    background: transparent;
+  }
+
+  #cy { width: 100%; height: 100%; background: var(--bg); }
+  #detail {
+    position: absolute; top: 20px; right: 20px; width: 300px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    padding: 18px 20px;
+    font-size: 13px;
+    box-shadow: 0 8px 30px rgba(20, 17, 13, 0.08);
+    display: none;
+    max-height: 78vh;
+    overflow-y: auto;
+    line-height: 1.5;
+  }
+  #detail h3 {
+    margin: 0 0 8px;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    padding-right: 20px;
+    line-height: 1.3;
+  }
+  #detail .meta {
+    color: var(--muted);
+    font-size: 12px;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  #detail .close {
+    position: absolute; top: 12px; right: 14px;
+    cursor: pointer; color: var(--muted);
+    font-size: 20px; line-height: 1;
+    border: none; background: none;
+    width: 24px; height: 24px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 4px;
+    transition: all 0.15s;
+  }
+  #detail .close:hover { color: var(--accent); background: var(--line-soft); }
+  #detail a { color: var(--accent); text-decoration: none; font-weight: 500; }
+  #detail a:hover { text-decoration: underline; }
+  #detail .section { margin-top: 14px; }
+  #detail .section-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.09em;
+    color: var(--muted);
+    margin-bottom: 6px;
+    font-weight: 600;
+  }
+  #detail ul { padding-left: 0; margin: 0; list-style: none; }
+  #detail li {
+    margin: 3px 0; font-size: 12.5px;
+    padding: 3px 0;
+    border-bottom: 1px solid var(--line-soft);
+  }
+  #detail li:last-child { border-bottom: none; }
+  #detail .chip {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 12px;
+    background: var(--line-soft);
+    color: var(--ink);
+    font-size: 11px;
+    margin: 2px 3px 2px 0;
+  }
+  #detail .chip.entity-place { background: #dfe9dc; }
+  #detail .chip.entity-person { background: #e6dfea; }
+  #detail .chip.entity-work { background: #ebe1d0; }
+  #detail .chip.entity-org { background: #dee6ec; }
+  #detail .chip.entity-theme { background: #efe4dd; }
+  #detail .weight {
+    color: var(--muted);
+    font-size: 11px;
+    float: right;
+    font-variant-numeric: tabular-nums;
+  }
+  #tooltip {
+    position: fixed;
+    padding: 8px 12px;
+    background: rgba(20, 17, 13, 0.94);
+    color: #fff;
+    font-size: 12px;
+    border-radius: 5px;
+    pointer-events: none;
+    display: none;
+    max-width: 280px;
+    z-index: 100;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.25);
+    line-height: 1.4;
+  }
+  #tooltip strong { font-weight: 600; letter-spacing: -0.005em; }
+  #tooltip .tooltip-meta { opacity: 0.7; font-size: 11px; margin-top: 2px; }
+  #status {
+    position: absolute; bottom: 14px; left: 296px;
+    font-size: 11px; color: var(--muted);
+    background: var(--panel);
+    padding: 4px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <div class="title">A Writer's Second Brain</div>
+    <div class="subtitle">Every post as a node; edges are shared meaning.</div>
+    <div class="corpus-stats" id="corpusStats"></div>
+
+    <h2>Search</h2>
+    <input type="text" id="search" placeholder="Filter by post title…">
+
+    <h2>Similarity threshold</h2>
+    <div class="row"><span id="simVal">≥ 0.70</span></div>
+    <input type="range" id="simSlider" min="0.5" max="1" step="0.01" value="0.7">
+
+    <h2>Years</h2>
+    <div class="row"><span id="yearVal"></span></div>
+    <div class="dual-range" id="yearRange">
+      <div class="track"></div>
+      <div class="fill" id="yearFill"></div>
+      <input type="range" id="yearFrom">
+      <input type="range" id="yearTo">
+    </div>
+
+    <h2>Edges</h2>
+    <label><input type="checkbox" data-layer="similar" checked> Semantic</label>
+    <label><input type="checkbox" data-layer="tagged"> Shared tags</label>
+    <label><input type="checkbox" data-layer="mentions"> Shared entities</label>
+    <label><input type="checkbox" id="crossBlogOnly"> Only cross-blog</label>
+
+    <h2>Blogs</h2>
+    <div id="blogList"></div>
+
+    <div class="buttons">
+      <button id="relayout">Re-layout</button>
+      <button id="fit">Fit</button>
+    </div>
+
+    <div class="legend">
+      <div class="item"><span class="line" style="background:#8a7a5c;"></span> Same-blog</div>
+      <div class="item"><span class="line" style="background:#b8563d; height:2px;"></span> Cross-blog</div>
+      <div class="item"><span class="line" style="background:#c8b568;"></span> Shared tag</div>
+      <div class="item"><span class="line" style="background:#a99;"></span> Shared entity</div>
+      <div class="hint">Node size ≈ connectedness.<br>Hover a node to see it lit up. Click to keep it focused. Press <kbd>Esc</kbd> to reset, <kbd>/</kbd> to search.</div>
+    </div>
+  </aside>
+  <div style="position: relative;">
+    <div id="cy"></div>
+    <div id="detail">
+      <button class="close" id="detailClose" aria-label="Close">×</button>
+      <div id="detailBody"></div>
+    </div>
+    <div id="tooltip"></div>
+    <div id="status">Loading…</div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+<script>
+const GRAPH = __WSB_GRAPH_JSON__;
+
+// Okabe-Ito palette, colour-blind safe.
+const PALETTE = ["#0072B2", "#D55E00", "#009E73", "#CC79A7", "#F0E442", "#56B4E9"];
+const BLOG_COLOR = {};
+GRAPH.blogs.forEach((b, i) => {
+  BLOG_COLOR[b.slug] = PALETTE[i % PALETTE.length];
+});
+
+const state = {
+  minSim: 0.7,
+  yearFrom: GRAPH.meta.year_min,
+  yearTo: GRAPH.meta.year_max,
+  layers: { similar: true, tagged: false, mentions: false },
+  crossBlogOnly: false,
+  activeBlogs: new Set(GRAPH.blogs.map(b => b.slug)),
+  search: "",
+  focusId: null,
+};
+
+// -------- Corpus stats header --------
+
+const postCountByBlog = new Map();
+GRAPH.posts.forEach(p => {
+  postCountByBlog.set(p.blog, (postCountByBlog.get(p.blog) || 0) + 1);
+});
+document.getElementById("corpusStats").innerHTML =
+  `<strong>${GRAPH.posts.length}</strong> posts · ` +
+  `<strong>${GRAPH.blogs.length}</strong> blogs · ` +
+  `<strong>${GRAPH.meta.year_min}–${GRAPH.meta.year_max}</strong>`;
+
+// -------- Sidebar controls --------
+
+const blogList = document.getElementById("blogList");
+GRAPH.blogs.forEach(b => {
+  const count = postCountByBlog.get(b.slug) || 0;
+  const label = document.createElement("label");
+  label.innerHTML =
+    `<input type="checkbox" data-blog="${b.slug}" checked>` +
+    `<span class="swatch" style="background:${BLOG_COLOR[b.slug]}"></span>` +
+    `<span style="flex:1;">${b.name}</span>` +
+    `<span style="color:var(--muted); font-size:11px; font-variant-numeric: tabular-nums;">${count}</span>`;
+  blogList.appendChild(label);
+});
+
+const simSlider = document.getElementById("simSlider");
+const simVal = document.getElementById("simVal");
+simSlider.addEventListener("input", () => {
+  state.minSim = parseFloat(simSlider.value);
+  simVal.textContent = "≥ " + state.minSim.toFixed(2);
+  applyFilters();
+});
+
+// Dual-range year slider
+const yearFrom = document.getElementById("yearFrom");
+const yearTo = document.getElementById("yearTo");
+const yearFill = document.getElementById("yearFill");
+const yearVal = document.getElementById("yearVal");
+const YMIN = GRAPH.meta.year_min;
+const YMAX = GRAPH.meta.year_max;
+yearFrom.min = yearTo.min = YMIN;
+yearFrom.max = yearTo.max = YMAX;
+yearFrom.value = YMIN;
+yearTo.value = YMAX;
+
+function updateYearFill() {
+  const range = YMAX - YMIN || 1;
+  const leftPct = ((state.yearFrom - YMIN) / range) * 100;
+  const rightPct = ((state.yearTo - YMIN) / range) * 100;
+  yearFill.style.left = leftPct + "%";
+  yearFill.style.right = (100 - rightPct) + "%";
+  yearVal.textContent = `${state.yearFrom} – ${state.yearTo}`;
+}
+
+function onYearChange() {
+  let lo = +yearFrom.value, hi = +yearTo.value;
+  if (lo > hi) [lo, hi] = [hi, lo];
+  state.yearFrom = lo;
+  state.yearTo = hi;
+  updateYearFill();
+  applyFilters();
+}
+yearFrom.addEventListener("input", onYearChange);
+yearTo.addEventListener("input", onYearChange);
+updateYearFill();
+
+document.querySelectorAll("[data-layer]").forEach(el => {
+  el.addEventListener("change", () => {
+    state.layers[el.dataset.layer] = el.checked;
+    rebuild();
+  });
+});
+
+document.querySelectorAll("[data-blog]").forEach(el => {
+  el.addEventListener("change", () => {
+    if (el.checked) state.activeBlogs.add(el.dataset.blog);
+    else state.activeBlogs.delete(el.dataset.blog);
+    applyFilters();
+  });
+});
+
+document.getElementById("crossBlogOnly").addEventListener("change", e => {
+  state.crossBlogOnly = e.target.checked;
+  applyFilters();
+});
+
+document.getElementById("search").addEventListener("input", e => {
+  state.search = e.target.value.toLowerCase();
+  applyFilters();
+});
+
+document.getElementById("relayout").addEventListener("click", () => runLayout());
+document.getElementById("fit").addEventListener("click", () => cy && cy.fit(null, 40));
+document.getElementById("detailClose").addEventListener("click", clearFocus);
+
+document.addEventListener("keydown", e => {
+  if (e.key === "Escape") clearFocus();
+  if (e.key === "/" && document.activeElement !== document.getElementById("search")) {
+    e.preventDefault();
+    document.getElementById("search").focus();
+  }
+});
+
+// -------- Cytoscape --------
+
+let cy = null;
+const postById = new Map(GRAPH.posts.map(p => [p.id, p]));
+const entityById = new Map(GRAPH.entities.map(e => [e.id, e]));
+
+const degreeById = new Map();
+GRAPH.edges.similar.forEach(e => {
+  degreeById.set(e.source, (degreeById.get(e.source) || 0) + 1);
+  degreeById.set(e.target, (degreeById.get(e.target) || 0) + 1);
+});
+const maxDeg = Math.max(1, ...degreeById.values());
+
+function rebuild() {
+  const nodes = [];
+  const showMentions = state.layers.mentions;
+  const usedEntityIds = new Set();
+
+  GRAPH.posts.forEach(p => {
+    const deg = degreeById.get(p.id) || 0;
+    const size = 6 + 14 * Math.sqrt(deg / maxDeg);
+    nodes.push({
+      data: {
+        id: p.id, label: p.title, blog: p.blog, lang: p.lang,
+        year: p.year, kind: "post", size,
+      },
+    });
+  });
+
+  if (showMentions) GRAPH.entities.forEach(e => usedEntityIds.add(e.id));
+
+  const edges = [];
+  if (state.layers.similar) {
+    GRAPH.edges.similar.forEach(e => {
+      const s = postById.get(e.source), t = postById.get(e.target);
+      const crossBlog = s && t && s.blog !== t.blog;
+      edges.push({
+        data: {
+          source: e.source, target: e.target,
+          kind: "similar", weight: e.weight,
+          cross: crossBlog ? 1 : 0,
+        },
+      });
+    });
+  }
+  if (state.layers.tagged) {
+    GRAPH.edges.tagged.forEach(e => {
+      edges.push({ data: { source: e.source, target: e.target, kind: "tagged" } });
+    });
+  }
+  if (state.layers.mentions) {
+    GRAPH.edges.mentions.forEach(e => {
+      edges.push({ data: { source: e.source, target: e.target, kind: "mentions" } });
+    });
+  }
+
+  if (showMentions) {
+    usedEntityIds.forEach(id => {
+      const e = entityById.get(id);
+      if (e) nodes.push({ data: { id: e.id, label: e.name, kind: "entity", entityKind: e.kind } });
+    });
+  }
+
+  if (cy) cy.destroy();
+  cy = cytoscape({
+    container: document.getElementById("cy"),
+    elements: { nodes, edges },
+    style: [
+      { selector: 'node[kind="post"]', style: {
+        "background-color": ele => BLOG_COLOR[ele.data("blog")] || "#888",
+        "label": "",
+        "width": ele => ele.data("size") || 8,
+        "height": ele => ele.data("size") || 8,
+        "border-width": 0,
+        "transition-property": "opacity, border-width, border-color, width, height, background-color",
+        "transition-duration": 120,
+      }},
+      { selector: 'node[kind="entity"]', style: {
+        "background-color": "#c9c4bb",
+        "shape": "diamond",
+        "width": 6,
+        "height": 6,
+      }},
+      { selector: 'edge[kind="similar"][cross=0]', style: {
+        "line-color": "#8a7a5c",
+        "width": ele => Math.max(0.4, (ele.data("weight") - 0.5) * 3),
+        "opacity": 0.35,
+        "curve-style": "haystack",
+      }},
+      { selector: 'edge[kind="similar"][cross=1]', style: {
+        "line-color": "#b8563d",
+        "width": ele => Math.max(0.7, (ele.data("weight") - 0.5) * 4),
+        "opacity": 0.6,
+        "curve-style": "haystack",
+      }},
+      { selector: 'edge[kind="tagged"]', style: {
+        "line-color": "#c8b568", "width": 0.5, "opacity": 0.25, "curve-style": "haystack",
+      }},
+      { selector: 'edge[kind="mentions"]', style: {
+        "line-color": "#a99", "width": 0.4, "opacity": 0.2, "curve-style": "haystack",
+      }},
+
+      /* Hover state: bright node ring, incident edges pop */
+      { selector: 'node.hover', style: {
+        "border-width": 3,
+        "border-color": "#14110d",
+        "z-index": 999,
+      }},
+      { selector: 'edge.hover-edge', style: {
+        "line-color": "#14110d",
+        "opacity": 0.95,
+        "width": ele => Math.max(1.8, ((ele.data("weight") || 0.7) - 0.5) * 8),
+        "z-index": 998,
+      }},
+      { selector: 'node.hover-neighbor', style: {
+        "border-width": 2,
+        "border-color": "#14110d",
+        "z-index": 997,
+      }},
+
+      /* Click focus: sustained highlight, everything else fades */
+      { selector: 'node.focused', style: {
+        "border-width": 3,
+        "border-color": "#14110d",
+      }},
+      { selector: '.faded', style: { "opacity": 0.06 } },
+    ],
+    layout: { name: "preset" },
+    wheelSensitivity: 0.2,
+    minZoom: 0.05,
+    maxZoom: 4,
+  });
+
+  cy.on("tap", "node", e => focusNode(e.target));
+  cy.on("tap", (e) => { if (e.target === cy) clearFocus(); });
+  cy.on("mouseover", "node", e => onHover(e.target));
+  cy.on("mouseout", "node", e => onUnhover(e.target));
+
+  applyFilters();
+  runLayout();
+}
+
+function runLayout() {
+  if (!cy) return;
+  document.getElementById("status").textContent = "Laying out…";
+  cy.layout({
+    name: "cose",
+    animate: false,
+    fit: true,
+    padding: 40,
+    idealEdgeLength: 70,
+    nodeRepulsion: 4500,
+    gravity: 0.2,
+    numIter: 900,
+    randomize: false,
+  }).run();
+  updateStatus();
+}
+
+function applyFilters() {
+  if (!cy) return;
+  const yearMin = state.yearFrom, yearMax = state.yearTo;
+  cy.batch(() => {
+    cy.nodes().forEach(n => {
+      let visible = true;
+      if (n.data("kind") === "post") {
+        const p = postById.get(n.id());
+        if (!state.activeBlogs.has(p.blog)) visible = false;
+        if (p.year !== null && (p.year < yearMin || p.year > yearMax)) visible = false;
+        if (state.search && !(p.title || "").toLowerCase().includes(state.search)) visible = false;
+      }
+      n.style("display", visible ? "element" : "none");
+    });
+    cy.edges().forEach(e => {
+      const src = e.source(), tgt = e.target();
+      let visible = src.visible() && tgt.visible();
+      if (visible && e.data("kind") === "similar") {
+        if ((e.data("weight") || 0) < state.minSim) visible = false;
+        if (state.crossBlogOnly && e.data("cross") === 0) visible = false;
+      }
+      e.style("display", visible ? "element" : "none");
+    });
+  });
+  if (state.focusId) reapplyFocus();
+  updateStatus();
+}
+
+function updateStatus() {
+  if (!cy) return;
+  const visN = cy.nodes(":visible").filter(n => n.data("kind") === "post").length;
+  const visE = cy.edges(":visible").length;
+  document.getElementById("status").textContent = `${visN} posts · ${visE} edges`;
+}
+
+// -------- Hover --------
+
+const tooltip = document.getElementById("tooltip");
+
+function onHover(node) {
+  if (state.focusId) return; // don't override click focus
+  const visibleEdges = node.connectedEdges(":visible");
+  const neighbours = visibleEdges.connectedNodes().not(node);
+  cy.batch(() => {
+    node.addClass("hover");
+    visibleEdges.addClass("hover-edge");
+    neighbours.addClass("hover-neighbor");
+  });
+  showTooltip(node);
+}
+
+function onUnhover(node) {
+  cy.batch(() => {
+    cy.elements().removeClass("hover").removeClass("hover-edge").removeClass("hover-neighbor");
+  });
+  hideTooltip();
+}
+
+function showTooltip(node) {
+  if (node.data("kind") !== "post") return;
+  const p = postById.get(node.id());
+  if (!p) return;
+  tooltip.innerHTML =
+    `<strong>${escape(p.title)}</strong>` +
+    `<div class="tooltip-meta">${p.date} · ${p.blog}${p.lang ? " · " + p.lang : ""}</div>`;
+  tooltip.style.display = "block";
+  const pos = node.renderedPosition();
+  const container = document.getElementById("cy").getBoundingClientRect();
+  const size = node.data("size") || 10;
+  let left = container.left + pos.x + size + 8;
+  let top = container.top + pos.y + size + 8;
+  const rect = tooltip.getBoundingClientRect();
+  if (left + rect.width > window.innerWidth - 12) left = container.left + pos.x - rect.width - 8;
+  if (top + rect.height > window.innerHeight - 12) top = container.top + pos.y - rect.height - 8;
+  tooltip.style.left = left + "px";
+  tooltip.style.top = top + "px";
+}
+
+function hideTooltip() {
+  tooltip.style.display = "none";
+}
+
+// -------- Focus (click) --------
+
+function focusNode(node) {
+  state.focusId = node.id();
+  cy.batch(() => {
+    cy.elements().removeClass("hover").removeClass("hover-edge").removeClass("hover-neighbor");
+  });
+  reapplyFocus();
+  showDetail(node);
+  hideTooltip();
+}
+
+function reapplyFocus() {
+  if (!cy || !state.focusId) return;
+  const focused = cy.getElementById(state.focusId);
+  if (focused.empty()) return;
+  const neighborhood = focused.closedNeighborhood();
+  cy.batch(() => {
+    cy.elements().removeClass("focused").removeClass("faded");
+    focused.addClass("focused");
+    cy.elements().difference(neighborhood).addClass("faded");
+  });
+}
+
+function clearFocus() {
+  state.focusId = null;
+  if (cy) cy.elements().removeClass("focused").removeClass("faded");
+  document.getElementById("detail").style.display = "none";
+}
+
+// -------- Detail panel --------
+
+function showDetail(node) {
+  const detail = document.getElementById("detail");
+  const body = document.getElementById("detailBody");
+  const kind = node.data("kind");
+  if (kind === "post") {
+    const p = postById.get(node.id());
+    const neighbours = node.connectedEdges(":visible")
+      .filter(e => e.data("kind") === "similar")
+      .map(e => {
+        const other = e.source().id() === p.id ? e.target() : e.source();
+        const op = postById.get(other.id());
+        return { title: op?.title, weight: e.data("weight"), blog: op?.blog, cross: e.data("cross") };
+      })
+      .sort((a, b) => (b.weight || 0) - (a.weight || 0))
+      .slice(0, 6);
+
+    const topEntities = (p.entities || []).slice(0, 8);
+
+    let html = `<h3>${escape(p.title)}</h3>`;
+    html += `<div class="meta">`;
+    html += `<span style="display:flex; align-items:center; gap:5px;"><span class="swatch" style="background:${BLOG_COLOR[p.blog]}"></span>${p.blog}</span>`;
+    html += `<span>·</span><span>${p.date}</span>`;
+    if (p.lang) html += `<span>·</span><span>${p.lang}</span>`;
+    html += `</div>`;
+    if (p.url) html += `<div><a href="${p.url}" target="_blank" rel="noopener">Open post ↗</a></div>`;
+
+    if (neighbours.length) {
+      html += `<div class="section"><div class="section-label">Nearest visible</div><ul>`;
+      html += neighbours.map(n =>
+        `<li>${escape(n.title || "")} <span class="weight">${(n.weight || 0).toFixed(2)}${n.cross ? " ×" : ""}</span></li>`
+      ).join("");
+      html += `</ul></div>`;
+    }
+
+    if (topEntities.length) {
+      html += `<div class="section"><div class="section-label">Mentioned</div>`;
+      html += topEntities.map(e => `<span class="chip entity-${e.kind}">${escape(e.name)}</span>`).join("");
+      html += `</div>`;
+    }
+
+    if (p.tags && p.tags.length) {
+      html += `<div class="section"><div class="section-label">Tags</div>`;
+      html += p.tags.slice(0, 12).map(t => `<span class="chip">${escape(t)}</span>`).join("");
+      html += `</div>`;
+    }
+
+    body.innerHTML = html;
+  } else {
+    body.innerHTML = `<h3>${escape(node.data("label"))}</h3><div class="meta">${node.data("entityKind")}</div>`;
+  }
+  detail.style.display = "block";
+}
+
+function escape(s) {
+  return String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+}
+
+// -------- Kickoff --------
+rebuild();
+</script>
+</body>
+</html>

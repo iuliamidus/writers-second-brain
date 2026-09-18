@@ -110,6 +110,42 @@ also available for structural questions Neo4j can answer.
 The server is read-only; it cannot mutate SQLite. Fetching, extraction and
 canonicalisation stay CLI-only.
 
+## Sharing it: the hosted site
+
+A single-page app that combines the interactive graph and a chat interface,
+deployable to Vercel as a static site plus one serverless function.
+Non-technical readers get a URL they open on desktop or phone.
+
+Generate the deploy tree into the repo root:
+
+```bash
+export WSB_SITE_PASSWORD="whatever passphrase you want to share"
+wsb site build
+```
+
+This writes:
+
+| Path            | What it is |
+|---|---|
+| `index.html`    | The app: graph + chat, password-gated |
+| `data.json`     | Baked corpus data the client tools operate on |
+| `api/chat.py`   | Vercel serverless proxy that adds `ANTHROPIC_API_KEY` |
+| `vercel.json`   | Routing + Python runtime config |
+
+Commit and push; Vercel rebuilds on push if the repo is connected.
+
+On Vercel (project settings → Environment Variables), set:
+
+- `ANTHROPIC_API_KEY` — your workspace-scoped key
+- `WSB_SITE_PASSWORD_HASH` — SHA-256 of the passphrase you used at build
+  time (the same value that got embedded in `index.html`). Copy it out of
+  the generated HTML if you want to be sure they match.
+
+The chat lives client-side: the browser asks Claude via the proxy, then
+executes tool calls (`search_posts`, `similar_posts`, etc.) against
+`data.json` locally. The API key never reaches the browser. All the corpus
+data is public to anyone who has the passphrase — treat that accordingly.
+
 ## Design notes
 
 **Diacritics are load-bearing.** Romanian writers mix diacritics and bare

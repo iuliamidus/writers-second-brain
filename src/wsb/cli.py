@@ -23,8 +23,10 @@ from wsb.sources import build_source, detect_platform
 app = typer.Typer(add_completion=False, help="A Writer's Second Brain")
 graph_app = typer.Typer(help="Graph projection commands")
 entities_app = typer.Typer(help="Entity maintenance commands")
+site_app = typer.Typer(help="Deployable site commands")
 app.add_typer(graph_app, name="graph")
 app.add_typer(entities_app, name="entities")
+app.add_typer(site_app, name="site")
 
 console = Console()
 DEFAULT_DB = "second_brain.db"
@@ -296,7 +298,6 @@ def entities_apply_merges(
 
         console.print(f"\n[bold cyan]{kind}[/bold cyan] applying {len(approved)} approved merges")
         for cluster in approved:
-            canonical_id = store.upsert_entity(kind, cluster.canonical) if False else None
             # Look up existing entities; do NOT create if missing.
             canonical_row = store.conn.execute(
                 "SELECT id FROM entities WHERE kind = ? AND normalized = ?",
@@ -391,6 +392,43 @@ def embed(
     store.close()
 
 
+@site_app.command("build")
+def site_build(
+    db: str = typer.Option(DEFAULT_DB, "--db"),
+    output: Path = typer.Option(Path("."), "--output", "-o", help="Repo root where deploy files land"),
+    min_similarity: float = typer.Option(0.5, "--min-sim"),
+    password: str = typer.Option(
+        None, "--password",
+        help="Passphrase for the browser gate; defaults to $WSB_SITE_PASSWORD. Leave blank for public site.",
+        envvar="WSB_SITE_PASSWORD",
+    ),
+):
+    """Generate the deployable site — index.html, data.json, api/chat.py,
+    vercel.json — at the repo root, ready to `git push` and let Vercel
+    rebuild.
+    """
+    import os as _os
+
+    from wsb.site.build import build_site
+
+    store = Store(db)
+    summary = build_site(store, output, password=password, min_similarity=min_similarity)
+    store.close()
+
+    console.print(f"[green]Built site[/green] at {output.resolve()}")
+    console.print(f"  index.html   [dim]{summary['html_size_kb']} KB[/dim]")
+    console.print(f"  data.json    [dim]{summary['data_size_kb']} KB[/dim]")
+    console.print(f"    {summary['posts']} posts · {summary['entities']} entities · {summary['similar_edges']} SIMILAR_TO")
+    console.print(f"  api/chat.py")
+    console.print(f"  vercel.json")
+    if summary["password_gate"]:
+        console.print("\n[green]Password gate enabled.[/green]  Also set on Vercel:")
+        console.print("  [dim]WSB_SITE_PASSWORD_HASH[/dim]  (same value as at build time — the hash is embedded)")
+        console.print("  [dim]ANTHROPIC_API_KEY[/dim]")
+    else:
+        console.print("\n[yellow]No password gate.[/yellow]  Site will be publicly reachable.")
+
+
 @app.command()
 def mcp(db: str = typer.Option(None, "--db", help="DB path; defaults to $WSB_DB or ./second_brain.db")):
     """Run the MCP server over stdio for chat-client integration.
@@ -450,6 +488,36 @@ def graph_build(
     for rel, n in sorted(by_rel.items(), key=lambda kv: -kv[1]):
         console.print(f"  {rel:<14} {n}")
     store.close()
+
+
+@graph_app.command("export")
+def graph_export(
+    db: str = typer.Option(DEFAULT_DB, "--db"),
+    output: Path = typer.Option(Path("data/graph.html"), "--output", "-o"),
+    min_similarity: float = typer.Option(0.5, "--min-sim", help="Prune weak SIMILAR_TO edges"),
+):
+    """Emit a self-contained interactive HTML view of the graph.
+
+    Open the file in a browser — no server, no Neo4j. Everything is
+    filterable in-place: blog, year, similarity threshold, edge layers.
+    Re-run whenever the underlying data changes.
+    """
+    from wsb.graph.export import build_graph_json, render_html
+
+    store = Store(db)
+    graph = build_graph_json(store, min_similarity=min_similarity)
+    html = render_html(graph)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(html)
+    store.close()
+
+    size_kb = len(html.encode("utf-8")) // 1024
+    console.print(f"[green]Wrote[/green] {output}  [dim]({size_kb} KB)[/dim]")
+    console.print(f"  {len(graph['posts'])} posts · {len(graph['entities'])} entities")
+    console.print(f"  edges: SIMILAR_TO {len(graph['edges']['similar'])}, "
+                  f"TAGGED {len(graph['edges']['tagged'])}, "
+                  f"MENTIONS {len(graph['edges']['mentions'])}")
+    console.print(f"\nOpen it: [blue]open {output}[/blue]")
 
 
 @graph_app.command("push")

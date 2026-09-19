@@ -1,13 +1,15 @@
 {
   "version": 2,
-  "cleanUrls": true,
-  "trailingSlash": false,
-  "headers": [
-    {
-      "source": "/data.json",
-      "headers": [
-        { "key": "Cache-Control", "value": "public, max-age=3600" }
-      ]
-    }
+  "builds": [
+    { "src": "index.html", "use": "@vercel/static" },
+    { "src": "data.json", "use": "@vercel/static" },
+    { "src": "api/chat.py", "use": "@vercel/python" }
+  ],
+  "routes": [
+    { "src": "/api/chat", "dest": "/api/chat.py" },
+    { "src": "/data.json", "dest": "/data.json",
+      "headers": { "Cache-Control": "public, max-age=3600" } },
+    { "src": "/", "dest": "/index.html" },
+    { "src": "/(.*)", "dest": "/index.html" }
   ]
 }

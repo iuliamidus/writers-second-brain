@@ -24,7 +24,7 @@ from wsb.graph.export import build_graph_json
 
 TEMPLATE_DIR = Path(__file__).parent
 TEMPLATE_HTML = TEMPLATE_DIR / "template.html"
-API_TEMPLATE = TEMPLATE_DIR / "api_chat.py"
+API_TEMPLATE = TEMPLATE_DIR / "api_chat.js"
 VERCEL_JSON = TEMPLATE_DIR / "vercel.json"
 
 
@@ -73,7 +73,10 @@ def build_site(
     html = html.replace("__WSB_PASSWORD_HASH__", password_hash)
     (output_root / "index.html").write_text(html)
 
-    shutil.copyfile(API_TEMPLATE, api / "chat.py")
+    # Ship the Edge Function; remove any older Python entrypoint so Vercel
+    # doesn't try to serve both.
+    shutil.copyfile(API_TEMPLATE, api / "chat.js")
+    (api / "chat.py").unlink(missing_ok=True)
     shutil.copyfile(VERCEL_JSON, output_root / "vercel.json")
 
     return {

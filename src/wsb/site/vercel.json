@@ -3,10 +3,10 @@
   "builds": [
     { "src": "index.html", "use": "@vercel/static" },
     { "src": "data.json", "use": "@vercel/static" },
-    { "src": "api/chat.py", "use": "@vercel/python" }
+    { "src": "api/chat.js", "use": "@vercel/node" }
   ],
   "routes": [
-    { "src": "/api/chat", "dest": "/api/chat.py" },
+    { "src": "/api/chat", "dest": "/api/chat.js" },
     { "src": "/data.json", "dest": "/data.json",
       "headers": { "Cache-Control": "public, max-age=3600" } },
     { "src": "/", "dest": "/index.html" },

@@ -45,7 +45,8 @@ def test_build_site_writes_all_expected_files(tmp_path):
 
     assert (out / "index.html").exists()
     assert (out / "data.json").exists()
-    assert (out / "api" / "chat.py").exists()
+    assert (out / "api" / "chat.js").exists()
+    assert not (out / "api" / "chat.py").exists()  # replaced by the JS entrypoint
     assert (out / "vercel.json").exists()
     assert summary["posts"] == 2
     assert summary["password_gate"] is True
@@ -83,9 +84,9 @@ def test_api_chat_stub_has_no_hardcoded_key(tmp_path):
     store, _ = _make_store(tmp_path)
     out = tmp_path / "deploy"
     build_site(store, out, password="hunter2")
-    api_text = (out / "api" / "chat.py").read_text()
+    api_text = (out / "api" / "chat.js").read_text()
     assert "sk-ant" not in api_text
-    assert 'os.environ.get("ANTHROPIC_API_KEY")' in api_text
+    assert "process.env.ANTHROPIC_API_KEY" in api_text
     store.close()
 
 

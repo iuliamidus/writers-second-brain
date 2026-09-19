@@ -403,7 +403,7 @@ def site_build(
         envvar="WSB_SITE_PASSWORD",
     ),
 ):
-    """Generate the deployable site — index.html, data.json, api/chat.py,
+    """Generate the deployable site — index.html, data.json, api/chat.js,
     vercel.json — at the repo root, ready to `git push` and let Vercel
     rebuild.
     """
@@ -419,7 +419,7 @@ def site_build(
     console.print(f"  index.html   [dim]{summary['html_size_kb']} KB[/dim]")
     console.print(f"  data.json    [dim]{summary['data_size_kb']} KB[/dim]")
     console.print(f"    {summary['posts']} posts · {summary['entities']} entities · {summary['similar_edges']} SIMILAR_TO")
-    console.print(f"  api/chat.py")
+    console.print(f"  api/chat.js")
     console.print(f"  vercel.json")
     if summary["password_gate"]:
         console.print("\n[green]Password gate enabled.[/green]  Also set on Vercel:")

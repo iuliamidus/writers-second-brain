@@ -350,28 +350,41 @@
   }
 
   /* ---- Mobile ---- */
+  #mobile-filter-btn { display: none; }
   @media (max-width: 720px) {
     header { padding: 10px 14px; }
     header .title .subtitle { display: none; }
+    header nav button { padding: 8px 14px; font-size: 14px; }
     #graph-view.active { grid-template-columns: 1fr; }
     #sidebar {
       position: absolute; top: 0; bottom: 0; left: -300px; width: 280px;
-      z-index: 20; transition: left 0.2s ease-out;
-      box-shadow: 4px 0 20px rgba(0,0,0,0.1);
+      z-index: 20; transition: left 0.22s ease-out;
+      box-shadow: 4px 0 20px rgba(0,0,0,0.12);
     }
     #sidebar.open { left: 0; }
     #mobile-filter-btn {
-      display: block; position: absolute; top: 12px; left: 12px;
-      background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
-      padding: 6px 10px; font-size: 12px; cursor: pointer; z-index: 15;
+      display: block !important;
+      position: absolute; top: 12px; left: 12px;
+      background: var(--panel); border: 1px solid var(--line); border-radius: 6px;
+      padding: 8px 14px; font-size: 13px; cursor: pointer; z-index: 15;
+      font-family: inherit; color: var(--ink); font-weight: 500;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.06);
     }
-    #detail { top: 60px; right: 12px; left: 12px; width: auto; }
+    #detail { top: 62px; right: 12px; left: 12px; width: auto; }
     #status { left: 12px; }
-    #messages { padding: 16px 12px 8px; }
-    #composer { padding: 8px 12px 12px; }
+
+    /* Chat — safe-area friendly, larger touch targets */
+    #messages { padding: 16px 12px 10px; }
+    #composer {
+      padding: 10px 12px calc(12px + env(safe-area-inset-bottom, 0px));
+    }
+    #composer form { padding: 6px 6px 6px 14px; }
+    #composer textarea { font-size: 16px; }  /* iOS won't zoom on focus at 16px+ */
+    #composer button { width: 36px; height: 36px; font-size: 18px; }
     .msg .bubble { max-width: 88%; font-size: 15px; }
+    .suggestion { padding: 14px 16px; font-size: 14px; }
+    .empty-state { margin-top: 20px; padding: 24px 16px; }
   }
-  #mobile-filter-btn { display: none; }
 </style>
 </head>
 <body>
@@ -467,7 +480,7 @@
 // ============================================================================
 // Password gate
 // ============================================================================
-const PASSWORD_HASH = "8b95221b733ebe575a7219296b4f71ebad3a1b4da6ec52f7e5e5ce91be1d511c";
+const PASSWORD_HASH = "57fc680031f2639a7dd181db3d911b1ac1dbafb9682cbadd114429ca0211f8c6";
 
 async function sha256(text) {
   const buf = new TextEncoder().encode(text);
@@ -519,19 +532,35 @@ initGate();
 // ============================================================================
 let DATA = null;
 let cy = null;
+let DATA_READY = null;  // Promise resolved when data.json finishes loading.
 
-async function bootstrap() {
-  const resp = await fetch("/data.json");
-  DATA = await resp.json();
-  document.getElementById("corpus-summary").textContent =
-    `${DATA.posts.length} posts · ${DATA.blogs.length} blogs · ${DATA.meta.year_min}–${DATA.meta.year_max}`;
-
-  buildPostIndex();
+function bootstrap() {
+  // Show shell UI immediately so the user sees the interface without waiting
+  // for the 2+ MB data payload. Chat is usable as soon as data lands; the
+  // graph is built lazily the first time its tab is opened.
   populateSuggestions();
   initChat();
   initTabs();
-  initGraphControls();
-  buildGraph();
+
+  DATA_READY = fetch("/data.json")
+    .then(r => r.json())
+    .then(json => {
+      DATA = json;
+      document.getElementById("corpus-summary").textContent =
+        `${DATA.posts.length} posts · ${DATA.blogs.length} blogs · ${DATA.meta.year_min}–${DATA.meta.year_max}`;
+      buildPostIndex();
+      initGraphControls();
+      // Toggle composer button state — it may have been disabled while loading.
+      document.getElementById("composer-send").disabled = false;
+    })
+    .catch(exc => {
+      document.getElementById("empty").innerHTML =
+        `<h2>Could not load the archive.</h2><p>${escape(String(exc))}</p>`;
+    });
+
+  // Keep the composer disabled until data lands, so tool calls have something
+  // to work with. Users can still type and see the empty state.
+  document.getElementById("composer-send").disabled = true;
 }
 
 // ============================================================================
@@ -802,56 +831,63 @@ function initChat() {
   });
 }
 
+function renderMessage(msg) {
+  const el = document.createElement("div");
+  el.className = "msg " + (msg.role === "user" ? "user" : "assistant");
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  fillBubble(bubble, msg);
+  el.appendChild(bubble);
+  return el;
+}
+
+function fillBubble(bubble, msg) {
+  if (msg.role === "user") {
+    const content = Array.isArray(msg.content)
+      ? msg.content.filter(b => b.type === "text").map(b => b.text).join("")
+      : msg.content;
+    bubble.textContent = content;
+    return;
+  }
+  if (!msg.content || msg.content.length === 0) {
+    bubble.innerHTML = `<span class="tool-pill pending">thinking</span>`;
+    return;
+  }
+  const parts = [];
+  for (const block of msg.content) {
+    if (!block) continue;
+    if (block.type === "text") {
+      parts.push(marked.parse(block.text || ""));
+    } else if (block.type === "tool_use") {
+      parts.push(`<span class="tool-pill pending">${escape(prettyToolName(block.name))}</span>`);
+    }
+  }
+  bubble.innerHTML = parts.join("");
+}
+
 function renderMessages() {
   const container = document.getElementById("messages");
   const empty = document.getElementById("empty");
   empty.style.display = CONVERSATION.length ? "none" : "block";
 
-  const existing = container.querySelectorAll(".msg");
-  existing.forEach(el => el.remove());
-
+  container.querySelectorAll(".msg").forEach(el => el.remove());
   for (const msg of CONVERSATION) {
-    if (msg.role === "user") {
-      const el = document.createElement("div");
-      el.className = "msg user";
-      const bubble = document.createElement("div");
-      bubble.className = "bubble";
-      const content = Array.isArray(msg.content)
-        ? msg.content.filter(b => b.type === "text").map(b => b.text).join("")
-        : msg.content;
-      bubble.textContent = content;
-      el.appendChild(bubble);
-      container.appendChild(el);
-    } else if (msg.role === "assistant") {
-      const el = document.createElement("div");
-      el.className = "msg assistant";
-      const bubble = document.createElement("div");
-      bubble.className = "bubble";
-      const parts = [];
-      for (const block of msg.content) {
-        if (block.type === "text") {
-          parts.push(marked.parse(block.text));
-        } else if (block.type === "tool_use") {
-          parts.push(`<span class="tool-pill">${escape(prettyToolName(block.name))}</span>`);
-        }
-      }
-      bubble.innerHTML = parts.join("");
-      el.appendChild(bubble);
-      container.appendChild(el);
-    }
+    container.appendChild(renderMessage(msg));
   }
+  container.scrollTop = container.scrollHeight;
+}
 
-  // Only ever render the last "pending" pill live.
-  if (CHAT_BUSY && CONVERSATION[CONVERSATION.length - 1]?.role === "user") {
-    const el = document.createElement("div");
-    el.className = "msg assistant";
-    const bubble = document.createElement("div");
-    bubble.className = "bubble";
-    bubble.innerHTML = `<span class="tool-pill pending">thinking</span>`;
-    el.appendChild(bubble);
-    container.appendChild(el);
+function renderStreamingMessage(msg) {
+  // Update only the last message's bubble — avoids full DOM rebuild per token.
+  const container = document.getElementById("messages");
+  const nodes = container.querySelectorAll(".msg");
+  const last = nodes[nodes.length - 1];
+  if (!last || !last.classList.contains("assistant")) {
+    renderMessages();
+    return;
   }
-
+  const bubble = last.querySelector(".bubble");
+  fillBubble(bubble, msg);
   container.scrollTop = container.scrollHeight;
 }
 
@@ -868,6 +904,10 @@ function prettyToolName(name) {
 }
 
 async function sendMessage(text) {
+  // Make sure data.json has landed before the model can call tools.
+  if (DATA_READY) await DATA_READY;
+  if (!DATA) return;  // load failed; empty state already shows the error
+
   CONVERSATION.push({ role: "user", content: [{ type: "text", text }] });
   CHAT_BUSY = true;
   renderMessages();
@@ -886,28 +926,16 @@ async function sendMessage(text) {
 }
 
 async function runTurn() {
-  // Loop: send to API, if it wants tools execute them, send again, until end_turn.
+  // Loop: stream from API, execute tools when it asks, send again, until end_turn.
   for (let step = 0; step < 8; step++) {
-    const resp = await fetch("/api/chat", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Password-Hash": sessionStorage.getItem("wsb-hash") || "",
-      },
-      body: JSON.stringify({ messages: CONVERSATION }),
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({ error: resp.statusText }));
-      throw new Error(err.error || "request failed");
-    }
-    const data = await resp.json();
-    CONVERSATION.push({ role: "assistant", content: data.content });
+    const { content, stopReason } = await streamOneMessage();
+    CONVERSATION.push({ role: "assistant", content });
     renderMessages();
 
-    if (data.stop_reason !== "tool_use") break;
+    if (stopReason !== "tool_use") break;
 
     const toolResults = [];
-    for (const block of data.content) {
+    for (const block of content) {
       if (block.type !== "tool_use") continue;
       const result = executeTool(block.name, block.input);
       toolResults.push({ type: "tool_result", tool_use_id: block.id, content: result });
@@ -915,6 +943,98 @@ async function runTurn() {
     CONVERSATION.push({ role: "user", content: toolResults });
     renderMessages();
   }
+}
+
+async function streamOneMessage() {
+  // Placeholder message so text can appear as it streams in.
+  const streaming = { role: "assistant", content: [], _streaming: true };
+  CONVERSATION.push(streaming);
+  renderMessages();
+
+  let resp;
+  try {
+    resp = await fetch("/api/chat", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Password-Hash": sessionStorage.getItem("wsb-hash") || "",
+      },
+      body: JSON.stringify({ messages: CONVERSATION.filter(m => !m._streaming) }),
+    });
+  } catch (exc) {
+    CONVERSATION.pop();
+    throw exc;
+  }
+
+  if (!resp.ok) {
+    CONVERSATION.pop();
+    let err;
+    try { err = await resp.json(); }
+    catch { err = { error: resp.statusText }; }
+    throw new Error(err.error || "request failed");
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  const blocks = [];
+  const toolJson = new Map();  // index -> partial JSON string
+  let stopReason = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+
+    let sep;
+    while ((sep = buffer.indexOf("\n\n")) !== -1) {
+      const raw = buffer.slice(0, sep);
+      buffer = buffer.slice(sep + 2);
+      const dataLine = raw.split("\n").find(l => l.startsWith("data: "));
+      if (!dataLine) continue;
+      const payload = dataLine.slice(6);
+      if (!payload || payload === "[DONE]") continue;
+
+      let evt;
+      try { evt = JSON.parse(payload); } catch { continue; }
+
+      if (evt.type === "content_block_start") {
+        const b = evt.content_block;
+        if (b.type === "text") blocks[evt.index] = { type: "text", text: "" };
+        else if (b.type === "tool_use") {
+          blocks[evt.index] = { type: "tool_use", id: b.id, name: b.name, input: {} };
+          toolJson.set(evt.index, "");
+        } else {
+          blocks[evt.index] = { ...b };
+        }
+        streaming.content = [...blocks];
+        renderStreamingMessage(streaming);
+      } else if (evt.type === "content_block_delta") {
+        const block = blocks[evt.index];
+        if (!block) continue;
+        if (evt.delta.type === "text_delta") {
+          block.text += evt.delta.text;
+          renderStreamingMessage(streaming);
+        } else if (evt.delta.type === "input_json_delta") {
+          toolJson.set(evt.index, (toolJson.get(evt.index) || "") + evt.delta.partial_json);
+        }
+      } else if (evt.type === "content_block_stop") {
+        const block = blocks[evt.index];
+        if (block?.type === "tool_use") {
+          try { block.input = JSON.parse(toolJson.get(evt.index) || "{}"); }
+          catch { block.input = {}; }
+          streaming.content = [...blocks];
+          renderStreamingMessage(streaming);
+        }
+      } else if (evt.type === "message_delta") {
+        if (evt.delta?.stop_reason) stopReason = evt.delta.stop_reason;
+      }
+    }
+  }
+
+  // Remove the placeholder — the caller pushes the finalised message.
+  CONVERSATION.pop();
+  return { content: blocks.filter(Boolean), stopReason };
 }
 
 function escape(s) {
@@ -926,11 +1046,16 @@ function escape(s) {
 // ============================================================================
 function initTabs() {
   document.querySelectorAll("header nav button").forEach(btn => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", async () => {
       const view = btn.dataset.view;
       document.querySelectorAll("header nav button").forEach(b => b.classList.toggle("active", b === btn));
       document.querySelectorAll(".view").forEach(v => v.classList.toggle("active", v.id === view + "-view"));
-      if (view === "graph" && cy) setTimeout(() => cy.resize(), 50);
+      if (view === "graph") {
+        // Build graph on first open, after data has landed.
+        if (DATA_READY) await DATA_READY;
+        if (!cy && DATA) buildGraph();
+        else if (cy) setTimeout(() => cy.resize(), 50);
+      }
     });
   });
 }
